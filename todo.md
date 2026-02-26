@@ -12,3 +12,5 @@
 - [x] Frontend: Hiển thị preview nội dung trước khi đẩy
 - [x] Frontend: Hiển thị tiến trình và kết quả đẩy bài
 - [x] Vitest tests cho backend API
+- [x] Bug: Code blocks (khối mã) trong Markdown không được chuyển thành code block trên Lark
+- [x] Bug: Upload ảnh lỗi thiếu quyền im:resource - user đã thêm quyền trên Lark console

@@ -27,21 +27,73 @@ describe("contentParser", () => {
       expect(blocks.length).toBeGreaterThan(0);
       const elements = blocks[0].text?.elements;
       expect(elements).toBeDefined();
-      // Check that at least one element has bold styling
       const hasBold = elements?.some(
         (e: any) => e.text_run?.text_element_style?.bold === true
       );
       expect(hasBold).toBe(true);
     });
 
-    it("should convert unordered lists to text blocks", () => {
+    it("should convert unordered lists to bullet blocks (type 12)", () => {
       const blocks = markdownToLarkBlocks("- Item 1\n- Item 2\n- Item 3");
       expect(blocks.length).toBe(3);
+      blocks.forEach((block) => {
+        expect(block.block_type).toBe(12);
+        expect(block.bullet).toBeDefined();
+        expect(block.bullet.elements).toBeDefined();
+      });
     });
 
-    it("should convert ordered lists to text blocks", () => {
+    it("should convert ordered lists to ordered blocks (type 13)", () => {
       const blocks = markdownToLarkBlocks("1. First\n2. Second\n3. Third");
       expect(blocks.length).toBe(3);
+      blocks.forEach((block) => {
+        expect(block.block_type).toBe(13);
+        expect(block.ordered).toBeDefined();
+        expect(block.ordered.elements).toBeDefined();
+      });
+    });
+
+    it("should convert fenced code blocks to code blocks (type 14)", () => {
+      const md = "```javascript\nconsole.log('hello');\n```";
+      const blocks = markdownToLarkBlocks(md);
+      expect(blocks.length).toBe(1);
+      expect(blocks[0].block_type).toBe(14);
+      expect(blocks[0].code).toBeDefined();
+      expect(blocks[0].code.elements).toBeDefined();
+      expect(blocks[0].code.elements[0].text_run.content).toContain("console.log");
+      // JavaScript = 30
+      expect(blocks[0].code.style.language).toBe(30);
+    });
+
+    it("should convert code blocks without language to PlainText (lang=1)", () => {
+      const md = "```\nsome code here\n```";
+      const blocks = markdownToLarkBlocks(md);
+      expect(blocks.length).toBe(1);
+      expect(blocks[0].block_type).toBe(14);
+      expect(blocks[0].code.style.language).toBe(1); // PlainText
+    });
+
+    it("should convert python code blocks with correct language", () => {
+      const md = "```python\nprint('hello')\n```";
+      const blocks = markdownToLarkBlocks(md);
+      expect(blocks[0].block_type).toBe(14);
+      expect(blocks[0].code.style.language).toBe(49); // Python
+    });
+
+    it("should convert typescript code blocks with correct language", () => {
+      const md = "```typescript\nconst x: number = 1;\n```";
+      const blocks = markdownToLarkBlocks(md);
+      expect(blocks[0].block_type).toBe(14);
+      expect(blocks[0].code.style.language).toBe(63); // TypeScript
+    });
+
+    it("should convert blockquotes to quote blocks (type 15)", () => {
+      const md = "> This is a quote";
+      const blocks = markdownToLarkBlocks(md);
+      expect(blocks.length).toBe(1);
+      expect(blocks[0].block_type).toBe(15);
+      expect(blocks[0].quote).toBeDefined();
+      expect(blocks[0].quote.elements[0].text_run.content).toContain("This is a quote");
     });
 
     it("should handle mixed content", () => {
@@ -63,6 +115,56 @@ Another paragraph.`;
       const blocks = markdownToLarkBlocks("");
       expect(blocks).toEqual([]);
     });
+
+    it("should convert horizontal rules to divider blocks (type 22)", () => {
+      const md = "Text above\n\n---\n\nText below";
+      const blocks = markdownToLarkBlocks(md);
+      const divider = blocks.find((b) => b.block_type === 22);
+      expect(divider).toBeDefined();
+      expect(divider!.divider).toBeDefined();
+    });
+
+    it("should handle complex markdown with code, lists, and headings", () => {
+      const md = `# API Reference
+
+## Installation
+
+\`\`\`bash
+npm install my-package
+\`\`\`
+
+### Usage
+
+1. Import the module
+2. Call the function
+
+> Note: This is important
+
+- Feature A
+- Feature B`;
+      const blocks = markdownToLarkBlocks(md);
+      
+      // Check heading blocks
+      const headings = blocks.filter((b) => b.block_type >= 3 && b.block_type <= 11);
+      expect(headings.length).toBe(3);
+      
+      // Check code block
+      const codeBlocks = blocks.filter((b) => b.block_type === 14);
+      expect(codeBlocks.length).toBe(1);
+      expect(codeBlocks[0].code.style.language).toBe(7); // Bash
+      
+      // Check ordered list
+      const orderedBlocks = blocks.filter((b) => b.block_type === 13);
+      expect(orderedBlocks.length).toBe(2);
+      
+      // Check quote
+      const quoteBlocks = blocks.filter((b) => b.block_type === 15);
+      expect(quoteBlocks.length).toBe(1);
+      
+      // Check bullet list
+      const bulletBlocks = blocks.filter((b) => b.block_type === 12);
+      expect(bulletBlocks.length).toBe(2);
+    });
   });
 
   describe("htmlToLarkBlocks", () => {
@@ -79,9 +181,37 @@ Another paragraph.`;
       expect(blocks[1].block_type).toBe(4);
     });
 
-    it("should convert HTML lists", () => {
+    it("should convert HTML unordered lists to bullet blocks", () => {
       const blocks = htmlToLarkBlocks("<ul><li>A</li><li>B</li></ul>");
       expect(blocks.length).toBe(2);
+      blocks.forEach((block) => {
+        expect(block.block_type).toBe(12);
+        expect(block.bullet).toBeDefined();
+      });
+    });
+
+    it("should convert HTML ordered lists to ordered blocks", () => {
+      const blocks = htmlToLarkBlocks("<ol><li>First</li><li>Second</li></ol>");
+      expect(blocks.length).toBe(2);
+      blocks.forEach((block) => {
+        expect(block.block_type).toBe(13);
+        expect(block.ordered).toBeDefined();
+      });
+    });
+
+    it("should convert HTML pre/code to code blocks", () => {
+      const blocks = htmlToLarkBlocks('<pre><code class="language-json">{"key": "value"}</code></pre>');
+      expect(blocks.length).toBe(1);
+      expect(blocks[0].block_type).toBe(14);
+      expect(blocks[0].code).toBeDefined();
+      expect(blocks[0].code.style.language).toBe(28); // JSON
+    });
+
+    it("should convert HTML blockquote to quote blocks", () => {
+      const blocks = htmlToLarkBlocks("<blockquote><p>A quote</p></blockquote>");
+      expect(blocks.length).toBe(1);
+      expect(blocks[0].block_type).toBe(15);
+      expect(blocks[0].quote).toBeDefined();
     });
 
     it("should handle links", () => {
