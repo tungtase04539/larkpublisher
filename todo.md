@@ -14,3 +14,4 @@
 - [x] Vitest tests cho backend API
 - [x] Bug: Code blocks (khối mã) trong Markdown không được chuyển thành code block trên Lark
 - [x] Bug: Upload ảnh lỗi thiếu quyền im:resource - user đã thêm quyền trên Lark console
+- [x] Bug: HTML upload không chuẩn như MD - cải thiện HTML parser toàn diện

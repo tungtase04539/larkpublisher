@@ -18,23 +18,8 @@ import * as cheerio from "cheerio";
  */
 
 /**
- * Lark CodeLanguage enum (from official docs):
- * 1 = PlainText, 2 = ABAP, 3 = Ada, 4 = Apache, 5 = Apex,
- * 6 = Assembly, 7 = Bash, 8 = CSharp, 9 = C++, 10 = C,
- * 11 = COBOL, 12 = CSS, 13 = CoffeeScript, 14 = D, 15 = Dart,
- * 16 = Delphi, 17 = Django, 18 = Dockerfile, 19 = Erlang, 20 = Fortran,
- * 21 = FoxPro, 22 = Go, 23 = Groovy, 24 = HTML, 25 = HTMLBars,
- * 26 = HTTP, 27 = Haskell, 28 = JSON, 29 = Java, 30 = JavaScript,
- * 31 = Julia, 32 = Kotlin, 33 = LateX, 34 = Lisp, 35 = Logo,
- * 36 = Lua, 37 = MATLAB, 38 = Makefile, 39 = Markdown, 40 = Nginx,
- * 41 = Objective-C, 42 = OpenEdgeABL, 43 = PHP, 44 = Perl, 45 = PostScript,
- * 46 = Power Shell, 47 = Prolog, 48 = ProtoBuf, 49 = Python, 50 = R,
- * 51 = RPG, 52 = Ruby, 53 = Rust, 54 = SAS, 55 = SCSS,
- * 56 = SQL, 57 = Scala, 58 = Scheme, 59 = Scratch, 60 = Shell,
- * 61 = Swift, 62 = Thrift, 63 = TypeScript, 64 = VBScript, 65 = Visual Basic,
- * 66 = XML, 67 = YAML
+ * Lark CodeLanguage enum (from official docs)
  */
-
 const LANGUAGE_MAP: Record<string, number> = {
   plain_text: 1, plaintext: 1, text: 1,
   abap: 2, ada: 3, apache: 4, apex: 5,
@@ -74,7 +59,7 @@ const LANGUAGE_MAP: Record<string, number> = {
 
 function getLanguageCode(lang: string): number {
   const normalized = lang.toLowerCase().trim();
-  return LANGUAGE_MAP[normalized] || 1; // default to PlainText
+  return LANGUAGE_MAP[normalized] || 1;
 }
 
 export interface LarkBlock {
@@ -87,19 +72,52 @@ export interface ImageReference {
   placeholder: string;
 }
 
+/** Style context passed down during recursive inline extraction */
+interface InlineStyle {
+  bold?: boolean;
+  italic?: boolean;
+  strikethrough?: boolean;
+  underline?: boolean;
+  inline_code?: boolean;
+  link?: { url: string };
+}
+
+// ─── Block-level tags that should NOT be treated as inline wrappers ───
+const BLOCK_TAGS = new Set([
+  "h1", "h2", "h3", "h4", "h5", "h6",
+  "p", "div", "section", "article", "main", "aside", "nav", "header", "footer", "figure", "figcaption",
+  "ul", "ol", "li",
+  "blockquote",
+  "pre",
+  "hr",
+  "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+  "img",
+  "details", "summary",
+  "dl", "dt", "dd",
+]);
+
+// Container tags that should be traversed recursively (they don't produce blocks themselves)
+const CONTAINER_TAGS = new Set([
+  "div", "section", "article", "main", "aside", "nav", "header", "footer",
+  "figure", "figcaption", "details", "summary", "span",
+]);
+
+// ─── Public API ──────────────────────────────────────────────────────
+
 /**
  * Convert Markdown content to Lark DocX blocks
  */
 export function markdownToLarkBlocks(
   markdown: string,
-  imageMap?: Map<string, string> // localPath -> lark image_key
+  imageMap?: Map<string, string>
 ): LarkBlock[] {
   const html = marked.parse(markdown, { async: false }) as string;
   return htmlToLarkBlocks(html, imageMap);
 }
 
 /**
- * Convert HTML content to Lark DocX blocks
+ * Convert HTML content to Lark DocX blocks.
+ * Handles deeply nested HTML structures (div > section > p, etc.)
  */
 export function htmlToLarkBlocks(
   html: string,
@@ -107,214 +125,447 @@ export function htmlToLarkBlocks(
 ): LarkBlock[] {
   const $ = cheerio.load(html);
   const blocks: LarkBlock[] = [];
+  processChildren($, $("body"), blocks, imageMap);
+  return blocks;
+}
 
-  // Process top-level elements
-  $("body").children().each((_, el) => {
-    const element = $(el);
-    const tagName = (el as any).tagName?.toLowerCase();
+// ─── Recursive block-level processor ─────────────────────────────────
 
-    switch (tagName) {
-      case "h1":
-        blocks.push(createHeadingBlock(3, extractTextElements($, element)));
-        break;
-      case "h2":
-        blocks.push(createHeadingBlock(4, extractTextElements($, element)));
-        break;
-      case "h3":
-        blocks.push(createHeadingBlock(5, extractTextElements($, element)));
-        break;
-      case "h4":
-        blocks.push(createHeadingBlock(6, extractTextElements($, element)));
-        break;
-      case "h5":
-        blocks.push(createHeadingBlock(7, extractTextElements($, element)));
-        break;
-      case "h6":
-        blocks.push(createHeadingBlock(8, extractTextElements($, element)));
-        break;
-      case "p":
-        // Check if paragraph contains only an image
-        const img = element.find("img");
-        if (img.length > 0 && imageMap) {
-          const src = img.attr("src") || "";
+function processChildren(
+  $: cheerio.CheerioAPI,
+  parent: cheerio.Cheerio<any>,
+  blocks: LarkBlock[],
+  imageMap?: Map<string, string>
+): void {
+  parent.contents().each((_, node) => {
+    if (node.type === "text") {
+      const text = $(node).text().trim();
+      if (text) {
+        blocks.push(createTextBlock([{ text_run: { content: text } }]));
+      }
+      return;
+    }
+    if (node.type !== "tag") return;
+
+    const el = $(node);
+    const tag = (node as any).tagName?.toLowerCase() as string;
+
+    processElement($, el, tag, blocks, imageMap);
+  });
+}
+
+function processElement(
+  $: cheerio.CheerioAPI,
+  element: cheerio.Cheerio<any>,
+  tag: string,
+  blocks: LarkBlock[],
+  imageMap?: Map<string, string>
+): void {
+  switch (tag) {
+    // ── Headings ──
+    case "h1": blocks.push(createHeadingBlock(3, extractInlineElements($, element, {}))); break;
+    case "h2": blocks.push(createHeadingBlock(4, extractInlineElements($, element, {}))); break;
+    case "h3": blocks.push(createHeadingBlock(5, extractInlineElements($, element, {}))); break;
+    case "h4": blocks.push(createHeadingBlock(6, extractInlineElements($, element, {}))); break;
+    case "h5": blocks.push(createHeadingBlock(7, extractInlineElements($, element, {}))); break;
+    case "h6": blocks.push(createHeadingBlock(8, extractInlineElements($, element, {}))); break;
+
+    // ── Paragraph ──
+    case "p": {
+      const imgs = element.find("img");
+      if (imgs.length > 0 && imageMap) {
+        // Handle images inside paragraphs
+        imgs.each((_, imgNode) => {
+          const src = $(imgNode).attr("src") || "";
           const imageKey = imageMap.get(src);
-          if (imageKey) {
-            blocks.push(createImageBlock(imageKey));
-          }
-          // Also add any text content
-          const textContent = element.text().trim();
-          if (textContent) {
-            blocks.push(createTextBlock(extractTextElements($, element)));
-          }
+          if (imageKey) blocks.push(createImageBlock(imageKey));
+        });
+        // Also add any remaining text
+        const inlineEls = extractInlineElements($, element, {}, true);
+        if (inlineEls.length > 0) {
+          blocks.push(createTextBlock(inlineEls));
+        }
+      } else {
+        const inlineEls = extractInlineElements($, element, {});
+        if (inlineEls.length > 0) {
+          blocks.push(createTextBlock(inlineEls));
+        }
+      }
+      break;
+    }
+
+    // ── Lists ──
+    case "ul": {
+      processListItems($, element, 12, blocks, imageMap);
+      break;
+    }
+    case "ol": {
+      processListItems($, element, 13, blocks, imageMap);
+      break;
+    }
+
+    // ── Definition lists ──
+    case "dl": {
+      element.children().each((_, child) => {
+        const childTag = (child as any).tagName?.toLowerCase();
+        const childEl = $(child);
+        if (childTag === "dt") {
+          const els = extractInlineElements($, childEl, { bold: true });
+          if (els.length > 0) blocks.push(createTextBlock(els));
+        } else if (childTag === "dd") {
+          const els = extractInlineElements($, childEl, {});
+          if (els.length > 0) blocks.push(createBulletBlock(els));
+        }
+      });
+      break;
+    }
+
+    // ── Blockquote ──
+    case "blockquote": {
+      processBlockquote($, element, blocks, imageMap);
+      break;
+    }
+
+    // ── Code block ──
+    case "pre": {
+      const codeEl = element.find("code");
+      const codeText = codeEl.length > 0 ? codeEl.text() : element.text();
+      const langClass = codeEl.attr("class") || "";
+      // Support: language-xxx, lang-xxx, or data-language="xxx"
+      const langMatch = langClass.match(/(?:language|lang)-(\w[\w+#-]*)/);
+      const dataLang = codeEl.attr("data-language") || element.attr("data-language") || "";
+      const language = langMatch ? langMatch[1] : (dataLang || "plain_text");
+      blocks.push(createCodeBlock(codeText, language));
+      break;
+    }
+
+    // ── Horizontal rule ──
+    case "hr": {
+      blocks.push(createDividerBlock());
+      break;
+    }
+
+    // ── Table ──
+    case "table": {
+      processTable($, element, blocks);
+      break;
+    }
+
+    // ── Standalone image ──
+    case "img": {
+      if (imageMap) {
+        const src = element.attr("src") || "";
+        const imageKey = imageMap.get(src);
+        if (imageKey) blocks.push(createImageBlock(imageKey));
+      }
+      break;
+    }
+
+    // ── <br> at top level → empty text block ──
+    case "br": {
+      blocks.push(createTextBlock([{ text_run: { content: "\n" } }]));
+      break;
+    }
+
+    // ── Container tags → recurse into children ──
+    default: {
+      if (CONTAINER_TAGS.has(tag)) {
+        // Check if this container has only inline content (no block children)
+        const hasBlockChildren = element.children().toArray().some((child) => {
+          const childTag = (child as any).tagName?.toLowerCase();
+          return childTag && BLOCK_TAGS.has(childTag);
+        });
+
+        if (hasBlockChildren) {
+          // Recurse into children
+          processChildren($, element, blocks, imageMap);
         } else {
-          const elements = extractTextElements($, element);
-          if (elements.length > 0) {
-            blocks.push(createTextBlock(elements));
+          // Treat entire container as a text block with inline content
+          const inlineEls = extractInlineElements($, element, {});
+          if (inlineEls.length > 0) {
+            blocks.push(createTextBlock(inlineEls));
           }
         }
-        break;
-      case "ul":
-        element.children("li").each((_, li) => {
-          const liEl = $(li);
-          blocks.push(createBulletBlock(extractTextElements($, liEl)));
-        });
-        break;
-      case "ol":
-        element.children("li").each((_, li) => {
-          const liEl = $(li);
-          blocks.push(createOrderedBlock(extractTextElements($, liEl)));
-        });
-        break;
-      case "blockquote":
-        // Extract all text from blockquote, handling nested <p> tags
-        const quoteParts: string[] = [];
-        element.find("p").each((_, p) => {
-          const pText = $(p).text().trim();
-          if (pText) quoteParts.push(pText);
-        });
-        const quoteText = quoteParts.length > 0 ? quoteParts.join("\n") : element.text().trim();
-        if (quoteText) {
-          blocks.push(createQuoteBlock(quoteText));
-        }
-        break;
-      case "pre":
-        const codeEl = element.find("code");
-        const codeText = codeEl.length > 0 ? codeEl.text() : element.text();
-        const langClass = codeEl.attr("class") || "";
-        const langMatch = langClass.match(/language-(\w+)/);
-        const language = langMatch ? langMatch[1] : "plain_text";
-        blocks.push(createCodeBlock(codeText, language));
-        break;
-      case "hr":
-        blocks.push(createDividerBlock());
-        break;
-      case "table":
-        // Convert table to text blocks since Lark DocX API doesn't support table blocks easily
-        const rows: string[] = [];
-        element.find("tr").each((_, tr) => {
-          const cells: string[] = [];
-          $(tr).find("th, td").each((_, cell) => {
-            cells.push($(cell).text().trim());
-          });
-          rows.push(cells.join(" | "));
-        });
-        if (rows.length > 0) {
-          rows.forEach((row) => {
-            blocks.push(
-              createTextBlock([{ text_run: { content: row } }])
-            );
-          });
-        }
-        break;
-      case "img":
-        if (imageMap) {
-          const src = element.attr("src") || "";
-          const imageKey = imageMap.get(src);
-          if (imageKey) {
-            blocks.push(createImageBlock(imageKey));
-          }
-        }
-        break;
-      default:
-        // Try to extract text from unknown elements
+      } else {
+        // Unknown tag - try to extract text
         const text = element.text().trim();
         if (text) {
           blocks.push(createTextBlock([{ text_run: { content: text } }]));
         }
-        break;
+      }
+      break;
+    }
+  }
+}
+
+// ─── List processing ─────────────────────────────────────────────────
+
+function processListItems(
+  $: cheerio.CheerioAPI,
+  listElement: cheerio.Cheerio<any>,
+  blockType: 12 | 13,
+  blocks: LarkBlock[],
+  imageMap?: Map<string, string>
+): void {
+  listElement.children("li").each((_, li) => {
+    const liEl = $(li);
+
+    // Check for nested lists inside this <li>
+    const nestedUl = liEl.children("ul");
+    const nestedOl = liEl.children("ol");
+
+    // Extract inline content of this <li> (excluding nested lists)
+    const inlineEls = extractInlineElements($, liEl, {}, false, true);
+    if (inlineEls.length > 0) {
+      if (blockType === 12) {
+        blocks.push(createBulletBlock(inlineEls));
+      } else {
+        blocks.push(createOrderedBlock(inlineEls));
+      }
+    }
+
+    // Process nested lists recursively
+    if (nestedUl.length > 0) {
+      nestedUl.each((_, nested) => {
+        processListItems($, $(nested), 12, blocks, imageMap);
+      });
+    }
+    if (nestedOl.length > 0) {
+      nestedOl.each((_, nested) => {
+        processListItems($, $(nested), 13, blocks, imageMap);
+      });
+    }
+  });
+}
+
+// ─── Blockquote processing ───────────────────────────────────────────
+
+function processBlockquote(
+  $: cheerio.CheerioAPI,
+  element: cheerio.Cheerio<any>,
+  blocks: LarkBlock[],
+  imageMap?: Map<string, string>
+): void {
+  // Collect all text content from blockquote, handling nested <p>, inline elements, etc.
+  const parts: string[] = [];
+
+  element.contents().each((_, child) => {
+    const childTag = (child as any).tagName?.toLowerCase();
+    const childEl = $(child);
+
+    if ((child as any).type === "text") {
+      const text = $(child).text().trim();
+      if (text) parts.push(text);
+    } else if (childTag === "p") {
+      const text = childEl.text().trim();
+      if (text) parts.push(text);
+    } else if (childTag === "blockquote") {
+      // Nested blockquote - flatten
+      const text = childEl.text().trim();
+      if (text) parts.push(text);
+    } else {
+      const text = childEl.text().trim();
+      if (text) parts.push(text);
     }
   });
 
-  return blocks;
+  // Fallback: if no children parsed, use full text
+  const quoteText = parts.length > 0 ? parts.join("\n") : element.text().trim();
+  if (quoteText) {
+    blocks.push(createQuoteBlock(quoteText));
+  }
 }
 
-/**
- * Extract text elements with formatting from a cheerio element
- */
-function extractTextElements(
+// ─── Table processing ────────────────────────────────────────────────
+
+function processTable(
   $: cheerio.CheerioAPI,
-  element: cheerio.Cheerio<any>
+  element: cheerio.Cheerio<any>,
+  blocks: LarkBlock[]
+): void {
+  const rows: string[][] = [];
+  element.find("tr").each((_, tr) => {
+    const cells: string[] = [];
+    $(tr).find("th, td").each((_, cell) => {
+      cells.push($(cell).text().trim());
+    });
+    if (cells.length > 0) rows.push(cells);
+  });
+
+  if (rows.length === 0) return;
+
+  // Create header row as bold text
+  if (rows.length > 0) {
+    const headerRow = rows[0];
+    blocks.push(createTextBlock([
+      { text_run: { content: headerRow.join(" | "), text_element_style: { bold: true } } },
+    ]));
+    // Add separator
+    blocks.push(createTextBlock([
+      { text_run: { content: headerRow.map(() => "---").join(" | ") } },
+    ]));
+  }
+
+  // Data rows
+  for (let i = 1; i < rows.length; i++) {
+    blocks.push(createTextBlock([
+      { text_run: { content: rows[i].join(" | ") } },
+    ]));
+  }
+}
+
+// ─── Inline element extraction (recursive with style inheritance) ────
+
+/**
+ * Recursively extract inline text elements from a cheerio element,
+ * inheriting and merging styles as we descend into nested tags.
+ *
+ * @param skipImages - if true, skip <img> tags (used when images are handled separately)
+ * @param skipNestedLists - if true, skip <ul>/<ol> children (used for <li> processing)
+ */
+function extractInlineElements(
+  $: cheerio.CheerioAPI,
+  element: cheerio.Cheerio<any>,
+  parentStyle: InlineStyle,
+  skipImages: boolean = false,
+  skipNestedLists: boolean = false
 ): any[] {
   const elements: any[] = [];
 
   element.contents().each((_, node) => {
     if (node.type === "text") {
       const text = $(node).text();
-      if (text.trim()) {
-        elements.push({ text_run: { content: text } });
+      if (text && text.trim()) {
+        elements.push(buildTextRun(text, parentStyle));
       }
-    } else if (node.type === "tag") {
-      const el = $(node);
-      const tagName = (node as any).tagName?.toLowerCase();
-      const text = el.text();
-
-      if (!text.trim()) return;
-
-      switch (tagName) {
-        case "strong":
-        case "b":
-          elements.push({
-            text_run: {
-              content: text,
-              text_element_style: { bold: true },
-            },
-          });
-          break;
-        case "em":
-        case "i":
-          elements.push({
-            text_run: {
-              content: text,
-              text_element_style: { italic: true },
-            },
-          });
-          break;
-        case "code":
-          // Inline code within text (not fenced code block)
-          elements.push({
-            text_run: {
-              content: text,
-              text_element_style: { inline_code: true },
-            },
-          });
-          break;
-        case "a":
-          const href = el.attr("href") || "";
-          elements.push({
-            text_run: {
-              content: text,
-              text_element_style: {
-                link: { url: encodeURI(href) },
-              },
-            },
-          });
-          break;
-        case "del":
-        case "s":
-          elements.push({
-            text_run: {
-              content: text,
-              text_element_style: { strikethrough: true },
-            },
-          });
-          break;
-        case "u":
-          elements.push({
-            text_run: {
-              content: text,
-              text_element_style: { underline: true },
-            },
-          });
-          break;
-        default:
-          elements.push({ text_run: { content: text } });
-          break;
-      }
+      return;
     }
+
+    if (node.type !== "tag") return;
+
+    const el = $(node);
+    const tag = (node as any).tagName?.toLowerCase() as string;
+
+    // Skip nested lists when processing <li> inline content
+    if (skipNestedLists && (tag === "ul" || tag === "ol")) return;
+
+    // Skip images if requested
+    if (skipImages && tag === "img") return;
+
+    // Handle <br> as newline
+    if (tag === "br") {
+      elements.push({ text_run: { content: "\n" } });
+      return;
+    }
+
+    // Handle inline formatting tags by merging styles
+    const mergedStyle = { ...parentStyle };
+
+    switch (tag) {
+      case "strong":
+      case "b":
+        mergedStyle.bold = true;
+        break;
+      case "em":
+      case "i":
+        mergedStyle.italic = true;
+        break;
+      case "code":
+        mergedStyle.inline_code = true;
+        break;
+      case "del":
+      case "s":
+      case "strike":
+        mergedStyle.strikethrough = true;
+        break;
+      case "u":
+      case "ins":
+        mergedStyle.underline = true;
+        break;
+      case "a": {
+        const href = el.attr("href") || "";
+        if (href) {
+          mergedStyle.link = { url: encodeURI(href) };
+        }
+        break;
+      }
+      case "mark": {
+        // Treat <mark> as bold+italic highlight
+        mergedStyle.bold = true;
+        break;
+      }
+      case "sub":
+      case "sup":
+      case "small":
+        // These don't have direct Lark equivalents, just pass through
+        break;
+      case "span": {
+        // Check for inline styles on span
+        const style = el.attr("style") || "";
+        if (style.includes("font-weight") && (style.includes("bold") || style.includes("700") || style.includes("800") || style.includes("900"))) {
+          mergedStyle.bold = true;
+        }
+        if (style.includes("font-style") && style.includes("italic")) {
+          mergedStyle.italic = true;
+        }
+        if (style.includes("text-decoration") && style.includes("underline")) {
+          mergedStyle.underline = true;
+        }
+        if (style.includes("text-decoration") && style.includes("line-through")) {
+          mergedStyle.strikethrough = true;
+        }
+        break;
+      }
+      case "img":
+        // Skip images in inline context
+        return;
+      case "p":
+        // <p> inside inline context (e.g., inside <li>) - extract and add newline
+        {
+          const nested = extractInlineElements($, el, mergedStyle, skipImages, skipNestedLists);
+          elements.push(...nested);
+          // Don't add trailing newline for last <p>
+          const siblings = el.parent().children("p");
+          if (siblings.length > 1 && siblings.index(el) < siblings.length - 1) {
+            elements.push({ text_run: { content: "\n" } });
+          }
+        }
+        return;
+      default:
+        // For unknown inline tags, just recurse
+        break;
+    }
+
+    // Recurse into children with merged style
+    const nested = extractInlineElements($, el, mergedStyle, skipImages, skipNestedLists);
+    elements.push(...nested);
   });
 
   return elements;
 }
+
+/**
+ * Build a text_run object with the given style
+ */
+function buildTextRun(content: string, style: InlineStyle): any {
+  const textRun: any = { content };
+  const styleObj: any = {};
+
+  if (style.bold) styleObj.bold = true;
+  if (style.italic) styleObj.italic = true;
+  if (style.strikethrough) styleObj.strikethrough = true;
+  if (style.underline) styleObj.underline = true;
+  if (style.inline_code) styleObj.inline_code = true;
+  if (style.link) styleObj.link = style.link;
+
+  if (Object.keys(styleObj).length > 0) {
+    textRun.text_element_style = styleObj;
+  }
+
+  return { text_run: textRun };
+}
+
+// ─── Block creators ──────────────────────────────────────────────────
 
 function createTextBlock(elements: any[]): LarkBlock {
   return {
@@ -355,10 +606,6 @@ function createQuoteBlock(text: string): LarkBlock {
   };
 }
 
-/**
- * Create a Lark Code Block (block_type = 14)
- * Uses the "code" data key with language enum in style
- */
 function createCodeBlock(code: string, language: string): LarkBlock {
   const langCode = getLanguageCode(language);
   return {
@@ -392,6 +639,8 @@ function createDividerBlock(): LarkBlock {
     divider: {},
   };
 }
+
+// ─── Image reference extraction ──────────────────────────────────────
 
 /**
  * Extract image references from Markdown content
