@@ -122,9 +122,8 @@ async function startServer() {
     const url = `http://localhost:${port}/`;
     console.log(`Server running on ${url}`);
     // Auto-open browser
-    import("child_process").then(({ exec }) => {
-      exec(`start ${url}`);
-    });
+    const { exec } = require("child_process");
+    exec(`start ${url}`);
   });
 }
 
