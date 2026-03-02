@@ -202,14 +202,14 @@ export const appRouter = router({
 
           let created: { block_id: string; block_type: number }[];
           try {
-            created = await addDocxBlocks(objToken, sanitizedBatch, i);
+            created = await addDocxBlocks(objToken, sanitizedBatch, -1);
           } catch (err: any) {
             console.warn(`[Publish] Batch ${i}-${i + batch.length} failed: ${err.message}. Trying one-by-one...`);
             // Retry blocks individually
             created = [];
             for (let j = 0; j < sanitizedBatch.length; j++) {
               try {
-                const single = await addDocxBlocks(objToken, [sanitizedBatch[j]], i + j);
+                const single = await addDocxBlocks(objToken, [sanitizedBatch[j]], -1);
                 created.push(single[0]);
               } catch (e2: any) {
                 console.warn(`[Publish] Block ${i + j} (type ${sanitizedBatch[j].block_type}) skipped: ${e2.message}`);
