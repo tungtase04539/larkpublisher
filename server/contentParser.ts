@@ -126,7 +126,23 @@ export function htmlToLarkBlocks(
   const $ = cheerio.load(html);
   const blocks: LarkBlock[] = [];
   processChildren($, $("body"), blocks, imageMap);
-  return blocks;
+
+  // Filter out blocks with empty content (e.g. empty headings like "##" with no text)
+  // Lark API rejects these with "invalid param"
+  return blocks.filter((block) => {
+    // Image and divider blocks are always valid
+    if (block.block_type === 27 || block.block_type === 22) return true;
+
+    // For all other block types, check if elements array is non-empty
+    const content = block.text || block.heading1 || block.heading2 ||
+      block.heading3 || block.heading4 || block.heading5 || block.heading6 ||
+      block.heading7 || block.heading8 || block.heading9 ||
+      block.bullet || block.ordered || block.quote || block.code;
+    if (content && Array.isArray(content.elements) && content.elements.length === 0) {
+      return false;
+    }
+    return true;
+  });
 }
 
 // ─── Recursive block-level processor ─────────────────────────────────
