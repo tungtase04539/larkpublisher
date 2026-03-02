@@ -117,4 +117,11 @@ async function startServer() {
   });
 }
 
-startServer().catch(console.error);
+startServer().catch(async (err) => {
+  console.error("\n❌ Lỗi khởi động server:", err.message || err);
+  console.error(err.stack || "");
+  // Keep cmd window open so user can read the error
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await new Promise<void>((resolve) => rl.question("\nNhấn Enter để thoát...", () => { rl.close(); resolve(); }));
+  process.exit(1);
+});
