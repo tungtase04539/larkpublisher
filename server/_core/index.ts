@@ -1,4 +1,12 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+import path from "node:path";
+
+// When running inside pkg exe, load .env from exe directory
+if ((process as any).pkg) {
+  dotenv.config({ path: path.resolve(path.dirname(process.execPath), ".env") });
+} else {
+  dotenv.config();
+}
 import express from "express";
 import { createServer } from "http";
 import net from "net";

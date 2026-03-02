@@ -48,10 +48,17 @@ export async function setupVite(app: Express, server: Server) {
 }
 
 export function serveStatic(app: Express) {
-  const distPath =
-    process.env.NODE_ENV === "development"
-      ? path.resolve(import.meta.dirname, "../..", "dist", "public")
-      : path.resolve(import.meta.dirname, "public");
+  // When running inside pkg exe, serve from exe_dir/public/
+  // Otherwise use the normal dist path
+  let distPath: string;
+  if ((process as any).pkg) {
+    distPath = path.resolve(path.dirname(process.execPath), "public");
+  } else if (process.env.NODE_ENV === "development") {
+    distPath = path.resolve(import.meta.dirname, "../..", "dist", "public");
+  } else {
+    distPath = path.resolve(import.meta.dirname, "public");
+  }
+
   if (!fs.existsSync(distPath)) {
     console.error(
       `Could not find the build directory: ${distPath}, make sure to build the client first`
