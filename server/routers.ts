@@ -184,7 +184,8 @@ export const appRouter = router({
 
         // 7. Add blocks in batches
         // Image blocks are sent as empty placeholders, then uploaded+patched after
-        const BATCH_SIZE = 5;
+        const BATCH_SIZE = 3;
+        let failedBatches = 0;
         for (let i = 0; i < blocks.length; i += BATCH_SIZE) {
           const batch = blocks.slice(i, i + BATCH_SIZE);
 
@@ -199,12 +200,29 @@ export const appRouter = router({
             return block;
           });
 
-          const created = await addDocxBlocks(objToken, sanitizedBatch, i);
+          let created: { block_id: string; block_type: number }[];
+          try {
+            created = await addDocxBlocks(objToken, sanitizedBatch, i);
+          } catch (err: any) {
+            console.warn(`[Publish] Batch ${i}-${i + batch.length} failed: ${err.message}. Trying one-by-one...`);
+            // Retry blocks individually
+            created = [];
+            for (let j = 0; j < sanitizedBatch.length; j++) {
+              try {
+                const single = await addDocxBlocks(objToken, [sanitizedBatch[j]], i + j);
+                created.push(single[0]);
+              } catch (e2: any) {
+                console.warn(`[Publish] Block ${i + j} (type ${sanitizedBatch[j].block_type}) skipped: ${e2.message}`);
+                created.push({ block_id: "", block_type: 0 });
+                failedBatches++;
+              }
+            }
+          }
 
           // For each image placeholder: upload image with block_id as parent_node, then PATCH
           for (const info of imageInfoInBatch) {
             const createdBlock = created[info.indexInBatch];
-            if (!createdBlock || createdBlock.block_type !== 27) continue;
+            if (!createdBlock || !createdBlock.block_id || createdBlock.block_type !== 27) continue;
 
             const imgBuffer = imageDataMap.get(info.filename);
             if (!imgBuffer) {
@@ -214,20 +232,28 @@ export const appRouter = router({
 
             // Upload with parent_node = block_id (NOT doc_token!)
             console.log(`[Publish] Uploading "${info.filename}" with parent_node=${createdBlock.block_id}`);
-            const fileToken = await uploadImageToLark(imgBuffer, info.filename, createdBlock.block_id);
-            console.log(`[Publish] Uploaded -> fileToken: ${fileToken}`);
+            try {
+              const fileToken = await uploadImageToLark(imgBuffer, info.filename, createdBlock.block_id);
+              console.log(`[Publish] Uploaded -> fileToken: ${fileToken}`);
 
-            // PATCH the block with the file_token
-            await updateDocxBlock(objToken, createdBlock.block_id, {
-              replace_image: { token: fileToken },
-            });
-            console.log(`[Publish] Patched image block ${createdBlock.block_id}`);
+              // PATCH the block with the file_token
+              await updateDocxBlock(objToken, createdBlock.block_id, {
+                replace_image: { token: fileToken },
+              });
+              console.log(`[Publish] Patched image block ${createdBlock.block_id}`);
+            } catch (imgErr: any) {
+              console.warn(`[Publish] Image "${info.filename}" failed: ${imgErr.message}`);
+            }
           }
 
           // Small delay to avoid rate limiting
           if (i + BATCH_SIZE < blocks.length) {
-            await new Promise((resolve) => setTimeout(resolve, 200));
+            await new Promise((resolve) => setTimeout(resolve, 300));
           }
+        }
+
+        if (failedBatches > 0) {
+          console.warn(`[Publish] ${failedBatches} blocks skipped due to errors`);
         }
 
         // 7. Construct the wiki URL for the new page
