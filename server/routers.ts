@@ -149,22 +149,36 @@ export const appRouter = router({
               ? extractImageReferences(input.content)
               : extractImageReferencesFromHtml(input.content);
 
+          console.log(`[Publish] Content type: ${input.contentType}, found ${imageRefs.length} image refs:`, imageRefs.slice(0, 10));
+
           for (const ref of imageRefs) {
             // Direct match
             if (imageDataMap.has(ref)) {
               refToFilename.set(ref, ref);
               continue;
             }
-            // Try basename match
-            const refBasename = ref.split("/").pop()?.split("?")[0] || "";
+            // Normalize: decode URI, replace backslashes
+            const normalizedRef = decodeURIComponent(ref).replace(/\\/g, "/");
+            const refBasename = normalizedRef.split("/").pop()?.split("?")[0]?.split("#")[0] || "";
+            const refNameNoExt = refBasename.replace(/\.[^.]+$/, "");
+
             for (const name of Array.from(imageDataMap.keys())) {
-              if (name === refBasename || ref.endsWith(name)) {
+              const nameNoExt = name.replace(/\.[^.]+$/, "");
+              if (
+                name === refBasename ||        // exact basename
+                ref.endsWith(name) ||           // path ends with name
+                normalizedRef.endsWith(name) || // normalized path ends with name
+                refBasename === name ||          // basenames match
+                refNameNoExt === nameNoExt ||   // names without extension match
+                name.includes(refNameNoExt) ||  // uploaded name contains ref name
+                refNameNoExt.includes(nameNoExt) // ref name contains uploaded name
+              ) {
                 refToFilename.set(ref, name);
                 break;
               }
             }
           }
-          console.log(`[Publish] Image ref matches:`, Array.from(refToFilename.entries()));
+          console.log(`[Publish] Image ref matches: ${refToFilename.size}/${imageRefs.length}`, Array.from(refToFilename.entries()).slice(0, 10));
         }
 
         // Create a dummy imgMap so blocks are generated with image placeholders
