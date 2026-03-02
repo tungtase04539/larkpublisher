@@ -1,12 +1,51 @@
 import dotenv from "dotenv";
+import fs from "fs";
 import path from "node:path";
+import readline from "node:readline";
 
-// When running inside pkg exe, load .env from exe directory
-if ((process as any).pkg) {
-  dotenv.config({ path: path.resolve(path.dirname(process.execPath), ".env") });
-} else {
-  dotenv.config();
+function getEnvPath(): string {
+  if ((process as any).pkg) {
+    return path.resolve(path.dirname(process.execPath), ".env");
+  }
+  return path.resolve(process.cwd(), ".env");
 }
+
+function askQuestion(rl: readline.Interface, question: string): Promise<string> {
+  return new Promise((resolve) => rl.question(question, resolve));
+}
+
+async function ensureEnv(): Promise<void> {
+  const envPath = getEnvPath();
+  dotenv.config({ path: envPath });
+
+  // Check if required env vars exist
+  if (process.env.LARK_APP_ID && process.env.LARK_APP_SECRET) return;
+
+  console.log("\n╔══════════════════════════════════════════╗");
+  console.log("║   Lark Wiki Publisher - Cài đặt ban đầu  ║");
+  console.log("╚══════════════════════════════════════════╝\n");
+
+  if (!fs.existsSync(envPath)) {
+    console.log(`Không tìm thấy file .env tại: ${envPath}`);
+  } else {
+    console.log("File .env thiếu thông tin cấu hình.");
+  }
+
+  console.log("Vui lòng nhập thông tin Lark App:\n");
+
+  const rl = readline.createInterface({input: process.stdin, output: process.stdout});
+  const appId = process.env.LARK_APP_ID || await askQuestion(rl, "  LARK_APP_ID: ");
+  const appSecret = process.env.LARK_APP_SECRET || await askQuestion(rl, "  LARK_APP_SECRET: ");
+  rl.close();
+
+  const envContent = `LARK_APP_ID=${appId.trim()}\nLARK_APP_SECRET=${appSecret.trim()}\n`;
+  fs.writeFileSync(envPath, envContent, "utf-8");
+  console.log(`\n✅ Đã lưu cấu hình vào ${envPath}\n`);
+
+  // Reload
+  dotenv.config({ path: envPath, override: true });
+}
+
 import express from "express";
 import { createServer } from "http";
 import net from "net";
@@ -36,6 +75,9 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // Ensure .env is configured before starting
+  await ensureEnv();
+
   const app = express();
   const server = createServer(app);
   // Configure body parser with larger size limit for file uploads
@@ -66,7 +108,12 @@ async function startServer() {
   }
 
   server.listen(port, () => {
-    console.log(`Server running on http://localhost:${port}/`);
+    const url = `http://localhost:${port}/`;
+    console.log(`Server running on ${url}`);
+    // Auto-open browser
+    import("child_process").then(({ exec }) => {
+      exec(`start ${url}`);
+    });
   });
 }
 
