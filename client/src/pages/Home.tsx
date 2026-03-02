@@ -115,22 +115,21 @@ export default function Home() {
     try {
       await validateUrl.mutateAsync({ url: wikiUrl });
       setProgress(25);
-      let imageMap: Record<string, string> = {};
-      if (images.length > 0) {
-        setPublishStep("uploading-images"); setProgress(40);
-        const uploadResult = await uploadImages.mutateAsync({ images: images.map((img) => ({ name: img.name, data: img.data })) });
-        uploadResult.forEach((r) => { imageMap[r.name] = r.imageKey; });
-        setProgress(60);
-      }
-      setPublishStep("publishing"); setProgress(75);
-      const result = await publishMutation.mutateAsync({ wikiUrl, title, content, contentType, imageMap: Object.keys(imageMap).length > 0 ? imageMap : undefined });
+      setPublishStep("publishing"); setProgress(40);
+      const result = await publishMutation.mutateAsync({
+        wikiUrl,
+        title,
+        content,
+        contentType,
+        images: images.length > 0 ? images.map((img) => ({ name: img.name, data: img.data })) : undefined,
+      });
       setProgress(100); setPublishStep("done"); setResultUrl(result.wikiUrl);
       toast.success("Đã đẩy bài viết thành công lên Lark Wiki!");
     } catch (err: any) {
       setPublishStep("error"); setErrorMsg(err.message || "Đã xảy ra lỗi khi đẩy bài viết");
       toast.error(err.message || "Lỗi khi publish");
     }
-  }, [wikiUrl, title, content, contentType, images, validateUrl, uploadImages, publishMutation]);
+  }, [wikiUrl, title, content, contentType, images, validateUrl, publishMutation]);
 
   const handleReset = useCallback(() => {
     setPublishStep("idle"); setProgress(0); setResultUrl(""); setErrorMsg("");

@@ -107,7 +107,7 @@ export async function addDocxBlocks(
   docId: string,
   blocks: any[],
   index: number = -1
-): Promise<void> {
+): Promise<{ block_id: string; block_type: number }[]> {
   const token = await getTenantAccessToken();
   const res = await fetch(
     `${BASE_URL}/docx/v1/documents/${docId}/blocks/${docId}/children`,
@@ -119,25 +119,65 @@ export async function addDocxBlocks(
   );
   const data = await res.json();
   if (data.code !== 0) {
+    console.error(`[addDocxBlocks] Failed batch at index ${index}:`, JSON.stringify(blocks.map(b => ({ block_type: b.block_type })), null, 2));
     throw new Error(`Failed to add blocks: ${data.msg} (code: ${data.code})`);
+  }
+  // Return created block info (block_id + block_type) for subsequent updates
+  return (data.data?.children || []).map((child: any) => ({
+    block_id: child.block_id,
+    block_type: child.block_type,
+  }));
+}
+
+/**
+ * Update a single block in a DocX document (used for setting image tokens)
+ */
+export async function updateDocxBlock(
+  docId: string,
+  blockId: string,
+  updateBody: any
+): Promise<void> {
+  const token = await getTenantAccessToken();
+  const res = await fetch(
+    `${BASE_URL}/docx/v1/documents/${docId}/blocks/${blockId}`,
+    {
+      method: "PATCH",
+      headers: getHeaders(token),
+      body: JSON.stringify(updateBody),
+    }
+  );
+  const data = await res.json();
+  if (data.code !== 0) {
+    console.error(`[updateDocxBlock] Failed to update block ${blockId}:`, data);
+    throw new Error(`Failed to update block: ${data.msg} (code: ${data.code})`);
   }
 }
 
 /**
- * Upload an image to Lark and get an image key (file_token)
+ * Upload an image to a Lark DocX document and get a file_token.
+ * Uses the Drive Media Upload API with parent_type "docx_image".
+ *
+ * @param imageBuffer - The image file as a Buffer
+ * @param fileName - Original filename (e.g. "photo.png")
+ * @param parentNode - The document's obj_token (document ID)
+ * @returns file_token to use in image blocks
  */
 export async function uploadImageToLark(
   imageBuffer: Buffer,
-  fileName: string
+  fileName: string,
+  parentNode: string
 ): Promise<string> {
   const token = await getTenantAccessToken();
 
   const formData = new FormData();
-  formData.append("image_type", "message");
-  const blob = new Blob([imageBuffer], { type: "image/png" });
-  formData.append("image", blob, fileName);
+  formData.append("file_name", fileName);
+  formData.append("parent_type", "docx_image");
+  formData.append("parent_node", parentNode);
+  formData.append("size", String(imageBuffer.byteLength));
+  const blob = new Blob([new Uint8Array(imageBuffer)], { type: "image/png" });
+  formData.append("file", blob, fileName);
 
-  const res = await fetch(`${BASE_URL}/im/v1/images`, {
+  const res = await fetch(`${BASE_URL}/drive/v1/medias/upload_all`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
     body: formData,
@@ -147,7 +187,7 @@ export async function uploadImageToLark(
   if (data.code !== 0) {
     throw new Error(`Failed to upload image: ${data.msg} (code: ${data.code})`);
   }
-  return data.data.image_key;
+  return data.data.file_token;
 }
 
 /**
