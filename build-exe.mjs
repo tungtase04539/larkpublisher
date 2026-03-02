@@ -3,7 +3,7 @@
  * 
  * Steps:
  * 1. Build frontend with Vite → dist/public/
- * 2. Bundle server with esbuild → dist/server.cjs
+ * 2. Bundle server with esbuild (ALL deps included) → dist/server.cjs
  * 3. Package with pkg → dist/LarkPublisher.exe
  */
 
@@ -30,10 +30,18 @@ fs.mkdirSync(DIST, { recursive: true });
 // 2. Build frontend
 run("npx vite build", "Building frontend (Vite)");
 
-// 3. Bundle server to CJS (pkg requires CommonJS)
+// 3. Bundle server to CJS with runtime dependencies included
+// Externalize dev/build-time native modules that aren't needed at runtime
+const externalPkgs = [
+  "vite", "lightningcss", "@tailwindcss/*", "tailwindcss",
+  "esbuild", "@babel/*", "postcss", "autoprefixer",
+  "@vitejs/*", "rollup", "@builder.io/*", "vite-plugin-manus-runtime",
+  "drizzle-kit", "prettier", "tsx", "typescript",
+].map(p => `--external:${p}`).join(" ");
+
 run(
-  `npx esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=cjs --outfile=dist/server.cjs --define:import.meta.dirname=__dirname --define:import.meta.url=__filename`,
-  "Bundling server (esbuild → CJS)"
+  `npx esbuild server/_core/index.ts --platform=node --bundle --format=cjs --outfile=dist/server.cjs --define:import.meta.dirname=__dirname --define:import.meta.url=__filename ${externalPkgs}`,
+  "Bundling server with runtime deps (esbuild → CJS)"
 );
 
 // 4. Package with pkg
