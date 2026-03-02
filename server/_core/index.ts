@@ -3,6 +3,17 @@ import fs from "fs";
 import path from "node:path";
 import readline from "node:readline";
 
+// Global crash handler — keeps cmd window open so user can see the error
+async function waitAndExit(msg: string, err?: any): Promise<never> {
+  console.error(`\n❌ ${msg}`);
+  if (err) console.error(err.stack || err.message || err);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  await new Promise<void>(r => rl.question("\nNhấn Enter để thoát...", () => { rl.close(); r(); }));
+  process.exit(1);
+}
+process.on("uncaughtException", (err) => { waitAndExit("Lỗi không xử lý được:", err); });
+process.on("unhandledRejection", (err) => { waitAndExit("Lỗi Promise:", err); });
+
 function getEnvPath(): string {
   if ((process as any).pkg) {
     return path.resolve(path.dirname(process.execPath), ".env");
